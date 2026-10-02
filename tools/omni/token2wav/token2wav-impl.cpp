@@ -7608,10 +7608,16 @@ bool flowGGUFModelRunner::init_from_host_caches(const flowStreamCacheHost & cach
         LOG_ERROR( "flowGGUFModelRunner.init_from_host_caches: cache_host is empty\n");
         return false;
     }
+    // 🔧 [T2W quality] n_timesteps no longer forced to match the cache: the cached tensors are
+    // flow-state (conformer/estimator KV caches) whose SHAPES don't depend on the step count,
+    // but the OLD hard match made the 5-step-baked cache pin every runtime session to 5
+    // flow-matching ODE steps — coarse sampling, audible static between speech segments.
+    // Only reject when the cache has no recorded timesteps but caller passed none either.
     if (cache_host.n_timesteps != 0 && cache_host.n_timesteps != n_timesteps) {
-        LOG_ERROR( "flowGGUFModelRunner.init_from_host_caches: n_timesteps mismatch (cache=%d, got=%d)\n",
-                     cache_host.n_timesteps, n_timesteps);
-        return false;
+        LOG_INFO("[Token2Mel] cache baked at n_timesteps=%d, running with %d (allowed: "
+                 "cache shapes are timestep-independent)\n",
+                 cache_host.n_timesteps, n_timesteps);
+        // Allow divergence; the session graph is rebuilt below with the requested step count.
     }
     if (cache_host.conformer_cnn_ne.size() != 3 || cache_host.conformer_att_ne.size() != 4 ||
         cache_host.estimator_cnn_ne.size() != 4 || cache_host.estimator_att_ne.size() != 4) {
@@ -8667,7 +8673,36 @@ bool Token2Wav::push_tokens_window(const int32_t *      tokens,
     const auto t_voc1 = clock::now();
 
     if (!voc_speech_cache_bt_.empty()) {
-        token2wav_utils::fade_in_out_b1(wave_bt_out, voc_speech_cache_bt_, voc_speech_window_, (int64_t) kSourceCacheLen);
+        // 🔧 [fade tune] T2W_FADE_MS env (default 160 = shipped). The seam chorus comes from
+        // blending the fresh re-render against the cached tail over 160ms; the two renditions
+        // drift in time (flow mel cache re-estimation), so a long overlap = doubled voice.
+        // A short fade kills most of the overlap while still hiding the phase step at the
+        // seam boundary. Cosine^2 taper for a smooth power transition.
+        static int64_t fade_n = -1;
+        if (fade_n < 0) {
+            // Default 40 ms (ear-tuned): long 160 ms blends chorus/double the seam,
+            // very short ones (< 20 ms) expose the phase step as clicks.
+            fade_n = (int64_t)(0.040 * 24000.0);
+            const char * fms = ::getenv("T2W_FADE_MS");
+            if (fms && *fms) {
+                double ms = atof(fms);
+                int64_t want = (int64_t)(ms * 0.001 * 24000.0);
+                if (want > 0 && want <= kSourceCacheLen) fade_n = want;
+                fprintf(stderr, "[T2W fade] using %lld samples (%lld ms)\n",
+                        (long long) fade_n, (long long)(fade_n * 1000 / 24000));
+            }
+        }
+        if (fade_n == kSourceCacheLen) {
+            token2wav_utils::fade_in_out_b1(wave_bt_out, voc_speech_cache_bt_, voc_speech_window_, kSourceCacheLen);
+        } else {
+            const int64_t n  = std::min<int64_t>(fade_n, std::min<int64_t>((int64_t) voc_speech_cache_bt_.size(),
+                                                                          (int64_t) wave_bt_out.size()));
+            for (int64_t i = 0; i < n; ++i) {
+                const float w = 0.5f * (1.0f - cosf(float(M_PI) * float(i) / float(n))); // cos^2 rise
+                wave_bt_out[(size_t) i] = wave_bt_out[(size_t) i] * w
+                                        + voc_speech_cache_bt_[(size_t) i] * (1.0f - w);
+            }
+        }
     }
 
     {
