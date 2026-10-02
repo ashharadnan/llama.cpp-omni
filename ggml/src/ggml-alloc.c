@@ -10,7 +10,10 @@
 #include <string.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MAX_FREE_BLOCKS 256
+// 🔧 [T2W quality] bumped 256→1024: bundling >5 flow-matching steps into one init graph
+// produces more allocation free-blocks than 256; export sessions (T2W_TIMESTEPS=16/32) crashed
+// with "out of free blocks".
+#define MAX_FREE_BLOCKS 1024
 
 //#define GGML_ALLOCATOR_DEBUG
 
