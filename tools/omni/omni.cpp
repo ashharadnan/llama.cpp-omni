@@ -8362,12 +8362,21 @@ void t2w_thread_func_python(struct omni_context * ctx_omni, common_params *param
             }
             
             // Slide window
+            // 🔧 [chunk-boundary overlap fix] On a mid-turn chunk flush (need_flush, not the
+            // final round window), preserve the PRE_LOOKAHEAD tail tokens so the NEXT chunk's
+            // first window still has lookahead context — otherwise every chunk-boundary ending
+            // is synthesized without its 3-token tail and audibly clips/fades.
             if (!ctx_omni->duplex_mode) {
-                if (token_buffer.size() > CHUNK_SIZE) {
+                const bool round_final_flush = is_final;
+                if (round_final_flush) {
+                    token_buffer.clear();  // round真正结束：不保留上下文
+                } else if (token_buffer.size() > CHUNK_SIZE) {
                     token_buffer.erase(token_buffer.begin(), token_buffer.begin() + CHUNK_SIZE);
-                } else {
-                    token_buffer.clear();
+                } else if (token_buffer.size() > PRE_LOOKAHEAD) {
+                    // chunk边界但还有超过lookahead的残留 → 保留最后3个token供下一个chunk接续
+                    token_buffer.erase(token_buffer.begin(), token_buffer.begin() + (token_buffer.size() - PRE_LOOKAHEAD));
                 }
+                // size <= PRE_LOOKAHEAD: keep as-is (seed for next chunk)
             } else {
                 size_t slide_amount;
                 if (is_last_window) {
@@ -8634,12 +8643,31 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
         int process_count = 0;
         while (token_buffer.size() >= min_process_threshold || (need_flush && !token_buffer.empty())) {
             // Determine how many tokens to process
-            size_t process_size = std::min(token_buffer.size(), (size_t)WINDOW_SIZE);
+            // 🔧 [final-flush dedup fix] On the FINAL window the buffer = [PRE_LOOKAHEAD held
+            // tokens][new tokens]. Those held tokens were ALREADY synthesized inside the
+            // previous window's audio — feeding them again repeats the last phoneme/word.
+            // Drop them from the final window only (vocoder mel/source caches keep continuity).
+            bool is_last_window = is_final && (token_buffer.size() <= (size_t) WINDOW_SIZE);
+            const size_t window_start = (is_last_window && token_buffer.size() > (size_t) PRE_LOOKAHEAD)
+                                            ? (size_t) PRE_LOOKAHEAD
+                                            : 0;
+            size_t process_size = std::min(token_buffer.size() - window_start, (size_t) WINDOW_SIZE);
             // 🔧 is_last_window: 只有 is_final 才算轮次真正的"最后窗口"（触发 token2wav 终结 + buffer 重置）
             // 双工 chunk_end 不能视为 last_window，否则 token2wav 会被重置、丢失跨 chunk 的状态
-            bool is_last_window = is_final && (token_buffer.size() <= WINDOW_SIZE);
             
-            std::vector<int32_t> window(token_buffer.begin(), token_buffer.begin() + process_size);
+            std::vector<int32_t> window(token_buffer.begin() + window_start, token_buffer.begin() + window_start + process_size);
+            
+            // 🔧 [AB test] optional dump of the exact speech-token stream fed to token2wav
+            {
+                const char * dump_env = ::getenv("T2W_DUMP_TOKENS");
+                if (dump_env && dump_env[0] != '\0') {
+                    FILE * fd_t2w_dump = fopen(dump_env, "ab");
+                    if (fd_t2w_dump) {
+                        fwrite(window.data(), sizeof(int32_t), window.size(), fd_t2w_dump);
+                        fclose(fd_t2w_dump);
+                    }
+                }
+            }
             
             // Time the inference
             auto t2w_start = std::chrono::high_resolution_clock::now();
@@ -8659,10 +8687,21 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
                     const int32_t byte_rate = sample_rate * block_align;
                     
                     std::vector<int16_t> pcm(chunk_wav.size());
+                    // 🔧 [join click fix] 5ms linear fade-in/out at piece edges kills the phase
+                    // discontinuity click at piece joins (speech continues across pieces; the
+                    // underlying stream is continuous, so only the boundary SAMPLES need a
+                    // micro-ramp to glue the concatenated files together).
+                    const size_t fade_len = std::min<size_t>(chunk_wav.size(), 120); // 5ms @24k
                     for (size_t i = 0; i < chunk_wav.size(); ++i) {
                         float x = chunk_wav[i];
                         if (!std::isfinite(x)) x = 0.0f;
                         x = std::max(-1.0f, std::min(1.0f, x));
+                        if (i < fade_len) {
+                            x *= (float) i / (float) fade_len;   // fade-in (sample0 → silence)
+                        }
+                        if (i >= chunk_wav.size() - fade_len) {
+                            x *= (float) (chunk_wav.size() - i) / (float) fade_len;
+                        }
                         pcm[i] = (int16_t)(x * 32767.0f);
                     }
                     
