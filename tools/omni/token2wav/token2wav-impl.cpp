@@ -8673,23 +8673,22 @@ bool Token2Wav::push_tokens_window(const int32_t *      tokens,
     const auto t_voc1 = clock::now();
 
     if (!voc_speech_cache_bt_.empty()) {
-        // 🔧 [fade tune] T2W_FADE_MS env (default 160 = shipped). The seam chorus comes from
-        // blending the fresh re-render against the cached tail over 160ms; the two renditions
-        // drift in time (flow mel cache re-estimation), so a long overlap = doubled voice.
-        // A short fade kills most of the overlap while still hiding the phase step at the
-        // seam boundary. Cosine^2 taper for a smooth power transition.
+        // 🔧 [fade tune] T2W_FADE_MS env (default 40 ms). The seam chorus comes from blending
+        // the fresh re-render against the cached tail over the shipped 160 ms; the two
+        // renditions drift in time (flow mel cache re-estimation), so a long overlap = doubled
+        // voice. A short fade kills most of the overlap while still hiding the phase step at
+        // the seam boundary. Cosine^2 taper for a smooth power transition. Ear-tuned: 160 ms
+        // chorused, < 20 ms clicked.
         static int64_t fade_n = -1;
         if (fade_n < 0) {
-            // Default 40 ms (ear-tuned): long 160 ms blends chorus/double the seam,
-            // very short ones (< 20 ms) expose the phase step as clicks.
-            fade_n = (int64_t)(0.040 * 24000.0);
+            fade_n = (int64_t)(0.040 * kSampleRate);
             const char * fms = ::getenv("T2W_FADE_MS");
             if (fms && *fms) {
                 double ms = atof(fms);
-                int64_t want = (int64_t)(ms * 0.001 * 24000.0);
+                int64_t want = (int64_t)(ms * 0.001 * kSampleRate);
                 if (want > 0 && want <= kSourceCacheLen) fade_n = want;
                 fprintf(stderr, "[T2W fade] using %lld samples (%lld ms)\n",
-                        (long long) fade_n, (long long)(fade_n * 1000 / 24000));
+                        (long long) fade_n, (long long)(fade_n * 1000 / kSampleRate));
             }
         }
         if (fade_n == kSourceCacheLen) {

@@ -8691,7 +8691,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
                     // discontinuity click at piece joins (speech continues across pieces; the
                     // underlying stream is continuous, so only the boundary SAMPLES need a
                     // micro-ramp to glue the concatenated files together).
-                    const size_t fade_len = std::min<size_t>(chunk_wav.size(), 120); // 5ms @24k
+                    const size_t fade_len = std::min<size_t>(chunk_wav.size(), (size_t)(sample_rate * 0.005)); // 5ms微渐变，消除接缝click
                     for (size_t i = 0; i < chunk_wav.size(); ++i) {
                         float x = chunk_wav[i];
                         if (!std::isfinite(x)) x = 0.0f;
