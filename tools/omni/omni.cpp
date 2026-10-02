@@ -3912,16 +3912,24 @@ struct omni_context * omni_init(struct common_params * params, int media_type, b
             }
             
             bool init_ok = false;
-            // 优先级: prompt_cache.gguf > prompt_bundle (实时计算 fallback)
-            print_with_timestamp("Token2Wav: using prompt_cache from %s\n", prompt_cache_gguf.c_str());
+            // 🔧 [T2W quality] Flow-matching ODE steps: hardcoded 5 = coarse sampling
+            // (audible static/noise floor between speech segments). Configurable via
+            // T2W_TIMESTEPS env (default 5 preserves the old behavior; 16-32 = cleaner).
+            int t2w_timesteps = 5;
+            {
+                const char * env_ts = ::getenv("T2W_TIMESTEPS");
+                if (env_ts && env_ts[0] != '\0') t2w_timesteps = atoi(env_ts);
+            }
+            print_with_timestamp("Token2Wav: using prompt_cache from %s (timesteps=%d)\n",
+                                prompt_cache_gguf.c_str(), t2w_timesteps);
             init_ok = ctx_omni->token2wav_session->init_from_prompt_cache_gguf(
                     encoder_gguf, flow_matching_gguf, flow_extra_gguf, prompt_cache_gguf,
-                    vocoder_gguf, device_token2mel, device_vocoder, 5, 1.0f);
+                    vocoder_gguf, device_token2mel, device_vocoder, t2w_timesteps, 1.0f);
             if (!init_ok && use_prompt_bundle) {
                 print_with_timestamp("Token2Wav: prompt_cache failed, fallback to prompt_bundle from %s\n", prompt_bundle_dir.c_str());
                 init_ok = ctx_omni->token2wav_session->init_from_prompt_bundle(
                         encoder_gguf, flow_matching_gguf, flow_extra_gguf, prompt_bundle_dir,
-                        vocoder_gguf, device_token2mel, device_vocoder, 5, 1.0f);
+                        vocoder_gguf, device_token2mel, device_vocoder, t2w_timesteps, 1.0f);
             }
             // Fallback to CPU
             if (!init_ok) {
@@ -3930,7 +3938,7 @@ struct omni_context * omni_init(struct common_params * params, int media_type, b
                 ctx_omni->token2wav_session = std::make_unique<omni::flow::Token2WavSession>();
                 init_ok = ctx_omni->token2wav_session->init_from_prompt_cache_gguf(
                         encoder_gguf, flow_matching_gguf, flow_extra_gguf, prompt_cache_gguf,
-                        vocoder_gguf, "cpu", "cpu", 5, 1.0f);
+                        vocoder_gguf, "cpu", "cpu", t2w_timesteps, 1.0f);
             }
             
             if (init_ok) {
