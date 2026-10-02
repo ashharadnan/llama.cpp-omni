@@ -128,6 +128,21 @@ else()
     set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE HIP)
 endif()
 
+# Windows HIP SDK: clang can't auto-locate the device libraries (see note above);
+# inject the explicit path as a target compile option for every HIP source.
+if (WIN32)
+    get_filename_component(_HIP_SDK_ROOT "${hip_DIR}/../../.." ABSOLUTE)
+    if (EXISTS "${_HIP_SDK_ROOT}/lib/llvm/amdgcn/bitcode/ockl.bc")
+        target_compile_options(ggml-hip PRIVATE "--rocm-device-lib-path=${_HIP_SDK_ROOT}/lib/llvm/amdgcn/bitcode")
+    endif()
+    # clang-linker-wrapper re-invokes lld-link and can strip import-lib directories
+    # (bare 'amdhip64.lib'); give the linker an explicit search path.
+    if (EXISTS "${_HIP_SDK_ROOT}/lib/amdhip64.lib")
+        target_link_options(ggml-hip PRIVATE "-L${_HIP_SDK_ROOT}/lib")
+    endif()
+    unset(_HIP_SDK_ROOT)
+endif()
+
 if (GGML_STATIC)
     message(FATAL_ERROR "Static linking not supported for HIP/ROCm")
 endif()
