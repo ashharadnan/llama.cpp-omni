@@ -5113,7 +5113,31 @@ static bool generate_audio_tokens_local(
     // 🔧 [单双工适配] max_audio_tokens:
     // - 双工模式: 26 (与 Python 对齐，max_token_per_chunk = 25 + 1)
     // - 单工模式: 500 (允许更长的生成，靠 EOS 结束)
-    const int max_audio_tokens = ctx_omni->duplex_mode ? 26 : 500;
+    //
+    // 🔧 [cloned-voice speech budget] The Python-parity 26-token cap (≈1.04s speech) assumes the
+    // factory voice speaks as fast as text arrives (~2.4 words/s). A cloned reference voice can be
+    // slower (~1.4-2.0 words/s), so each chunk speaks LESS than the 26-token budget assumes and the
+    // deficit compounds across a turn → tail text never spoken, mid-word chunk cuts, "skipped"
+    // words. Fix: size the audio budget from the chunk's actual text load.
+    // words ≈ n_tokens * 0.75; slow-clone pace ≈ 2.0 words/s ⇒ audio tokens ≈ n_tokens * 10 + 15.
+    // Empirically calibrated 2026-10-01: 24 text tokens (16 words, slow pace) need ~280 audio tokens.
+    const int chunk_speech_budget = std::max(26, n_tokens * 10 + 15);
+    // Every duplex chunk cap = speech budget; EOS stays blocked for the whole chunk (min == cap,
+    // same structure as Python where min=max=26) so the chunk always speaks its full text.
+    // Final chunk with text: cap = budget + 25 margin so EOS may fire inside the margin window.
+    // 🔧 [empty-flush overrun fix] The turn-end FLUSH chunk (n_tokens=0, "no LLM data but
+    // is_end_of_turn") has NO text left — generating past audio_bos there only produces
+    // hallucinated syllables (heard as garbled babble at the end of a turn, up to 2s with
+    // floor=26+cap=51). Allow immediate EOS: floor 0, cap 26.
+    // 🔧 [tiny-chunk overrun fix] The EOS BLOCK floor must scale below the cap for small chunks:
+    // a '.'/Yeah-style chunk (n_tokens<=2) with floor=budget(35) forced ≥1.4s of hallucinated
+    // tail even when EOS wanted to fire (evidence: '.' chunk → 3s junk at 16:12:09.987).
+    // Floor = enough time for a couple of words, never more; cap may stay generous because
+    // EOS is free to fire once the floor window passes.
+    const bool is_empty_flush = (n_tokens == 0 && is_end_of_turn);
+    const int eos_floor_final_chunk = is_empty_flush ? 0 : std::min(chunk_speech_budget, 8 + n_tokens * 8);
+    const int max_audio_tokens = ctx_omni->duplex_mode ?
+        (is_end_of_turn ? (is_empty_flush ? 26 : chunk_speech_budget + 25) : chunk_speech_budget) : 500;
     print_with_timestamp("TTS Local: mode=%s, max_audio_tokens=%d\n", 
                          ctx_omni->duplex_mode ? "duplex" : "simplex", max_audio_tokens);
     
@@ -5236,15 +5260,9 @@ static bool generate_audio_tokens_local(
     // Python generate_chunk: input_ids_sliced = new_tokens[:, 0:t]  # 只用当前 chunk 内的 tokens
     std::vector<llama_token> chunk_generated_tokens;
     
-    // 🔧 [单双工适配] min_new_tokens 逻辑
-    // - 双工模式: 与 Python streaming_generate 对齐
-    //   max_token_per_chunk = 25 + 1  # 26
-    //   min_token_per_chunk = 25 + 1  # 26
-    //   if end_of_turn: min_token_per_chunk = 0
-    // - 单工模式: 设置最小 100 个 tokens，防止 TTS 过早生成 EOS
-    //   10 个中文字约需要 100-150 个 audio tokens (每字 10-15 tokens)
-    const int min_new_tokens = ctx_omni->duplex_mode ? 
-        (is_end_of_turn ? 0 : 26) : 
+    // 🔧 [单双工适配] min_new_tokens 逻辑 (EOS floor defined above from chunk_speech_budget)
+    const int min_new_tokens = ctx_omni->duplex_mode ?
+        (is_end_of_turn ? eos_floor_final_chunk : 26) :
         100;  // 🔧 单工模式：至少生成 100 个 tokens 防止过早 EOS
     
     // 🚀 流水线优化：Token2Wav需要28个tokens (25+3 lookahead)才能输出音频
