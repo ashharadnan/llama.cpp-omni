@@ -8635,7 +8635,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
             // chunk_end 保持原语义"累积等下个 chunk"，避免把一轮 turn 切成多段 wav 产生播放 gap。
             need_flush = is_final;
         }
-        
+
         // Process windows using sliding window
         while (token_buffer.size() >= min_process_threshold || (need_flush && !token_buffer.empty())) {
             // Determine how many tokens to process
@@ -8650,9 +8650,9 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
             size_t process_size = std::min(token_buffer.size() - window_start, (size_t) WINDOW_SIZE);
             // 🔧 is_last_window: 只有 is_final 才算轮次真正的"最后窗口"（触发 token2wav 终结 + buffer 重置）
             // 双工 chunk_end 不能视为 last_window，否则 token2wav 会被重置、丢失跨 chunk 的状态
-            
+
             std::vector<int32_t> window(token_buffer.begin() + window_start, token_buffer.begin() + window_start + process_size);
-            
+
             // 🔧 [AB test] optional dump of the exact speech-token stream fed to token2wav.
             // File is APPENDED across turns/windows — clear it between measurement runs.
             {
@@ -8665,10 +8665,10 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
                     }
                 }
             }
-            
+
             // Time the inference
             auto t2w_start = std::chrono::high_resolution_clock::now();
-            
+
             std::vector<float> chunk_wav;
             if (ctx_omni->token2wav_session->feed_window(window, is_last_window, chunk_wav)) {
                 auto t2w_end = std::chrono::high_resolution_clock::now();
