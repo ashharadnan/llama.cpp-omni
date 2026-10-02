@@ -9049,9 +9049,17 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std::
                 print_with_timestamp("create t2w thread success\n");
             }
         }
-
+        // 🔧 [text-only ab-test fix] A first-call prefill with only `text` (index=0) used to fall
+        // into this init branch and the text was silently DROPPED — the model then free-ran from
+        // the bare system prompt (chatting in the wrong language about nothing). If the caller
+        // actually sent input with this init call, fall through and process it below.
+        if (text.empty() && aud_fname.empty() && img_fname.empty()) {
+            return true;
+        }
+        // falls through to the input-handling block below (no longer an else: an init call can
+        // CARRY input — when it does, both init AND input processing must run).
     }
-    else {
+    {
         if (!ctx_omni->async) {
             if (img_fname.length() > 0 && ctx_omni->ctx_vision == nullptr) {
                 LOG_WRN("%s: image provided but ctx_vision is NULL (media_type=%d), skipping: %s\n",
