@@ -7608,10 +7608,10 @@ bool flowGGUFModelRunner::init_from_host_caches(const flowStreamCacheHost & cach
         LOG_ERROR( "flowGGUFModelRunner.init_from_host_caches: cache_host is empty\n");
         return false;
     }
-    // 🔧 [T2W quality] n_timesteps no longer forced to match the cache: the cached tensors are
+    // [T2W quality] n_timesteps no longer forced to match the cache: the cached tensors are
     // flow-state (conformer/estimator KV caches) whose SHAPES don't depend on the step count,
     // but the OLD hard match made the 5-step-baked cache pin every runtime session to 5
-    // flow-matching ODE steps — coarse sampling, audible static between speech segments.
+    // flow-matching ODE steps - coarse sampling, audible static between speech segments.
     // A mismatch between recorded and requested steps is reported and allowed; nothing is
     // rejected (steps don't shape the cached tensors).
     if (cache_host.n_timesteps != 0 && cache_host.n_timesteps != n_timesteps) {
@@ -8674,7 +8674,7 @@ bool Token2Wav::push_tokens_window(const int32_t *      tokens,
     const auto t_voc1 = clock::now();
 
     if (!voc_speech_cache_bt_.empty()) {
-        // 🔧 [fade tune] T2W_FADE_MS env (default 40 ms). The seam chorus comes from blending
+        // [fade tune] T2W_FADE_MS env (default 40 ms). The seam chorus comes from blending
         // the fresh re-render against the cached tail over the shipped 160 ms; the two
         // renditions drift in time (flow mel cache re-estimation), so a long overlap = doubled
         // voice. A short fade kills most of the overlap while still hiding the phase step at

@@ -3912,7 +3912,7 @@ struct omni_context * omni_init(struct common_params * params, int media_type, b
             }
             
             bool init_ok = false;
-            // 🔧 [T2W quality] Flow-matching ODE steps: hardcoded 5 = coarse sampling
+            // [T2W quality] Flow-matching ODE steps: hardcoded 5 = coarse sampling
             // (audible static/noise floor between speech segments). Configurable via
             // T2W_TIMESTEPS env (default 5 preserves the old behavior; 16-32 = cleaner).
             int t2w_timesteps = 5;
@@ -5111,15 +5111,15 @@ static bool generate_audio_tokens_local(
     const int audio_bos_token_id = 151687;
     const int num_audio_tokens = 6562;
     // 🔧 [单双工适配] max_audio_tokens:
-    // - 双工模式: chunk_speech_budget（见下，随文本量缩放；空 flush = 26）
+    // - duplex mode: chunk_speech_budget (below, scales with text; empty flush = 26)
     // - 单工模式: 500 (允许更长的生成，靠 EOS 结束)
     //
-    // 🔧 [cloned-voice speech budget] The Python-parity 26-token cap (≈1.04s speech) assumes the
+    // [cloned-voice speech budget] The Python-parity 26-token cap (~1.04s speech) assumes the
     // factory voice speaks as fast as text arrives (~2.4 words/s). A cloned reference voice can be
     // slower (~1.4-2.0 words/s), so each chunk speaks LESS than the 26-token budget assumes and the
-    // deficit compounds across a turn → tail text never spoken, mid-word chunk cuts, "skipped"
+    // deficit compounds across a turn -> tail text never spoken, mid-word chunk cuts, "skipped"
     // words. Fix: size the audio budget from the chunk's actual text load.
-    // words ≈ n_tokens * 0.75; slow-clone pace ≈ 2.0 words/s ⇒ audio tokens ≈ n_tokens * 10 + 15.
+    // words ~ n_tokens * 0.75; slow-clone pace ~2.0 words/s => audio tokens ~ n_tokens * 10 + 15.
     // Empirically calibrated 2026-10-01: 24 text tokens (16 words, slow pace) need ~280 audio tokens.
     // Cloned-voice pace budget: ~10 audio tokens per text token + 15 headroom (ear-calibrated;
     // see note above). Factory-voice floor 26 keeps Python-parity for fast voices.
@@ -5131,13 +5131,13 @@ static bool generate_audio_tokens_local(
     // Every duplex chunk cap = speech budget; EOS stays blocked for the whole chunk (min == cap,
     // same structure as Python where min=max=26) so the chunk always speaks its full text.
     // Final chunk with text: cap = budget + 25 margin so EOS may fire inside the margin window.
-    // 🔧 [empty-flush overrun fix] The turn-end FLUSH chunk (n_tokens=0, "no LLM data but
-    // is_end_of_turn") has NO text left — generating past audio_bos there only produces
+    // [empty-flush overrun fix] The turn-end FLUSH chunk (n_tokens=0, "no LLM data but
+    // is_end_of_turn") has NO text left - generating past audio_bos there only produces
     // hallucinated syllables (heard as garbled babble at the end of a turn, up to 2s with
     // floor=26+cap=51). Allow immediate EOS: floor 0, cap 26.
-    // 🔧 [tiny-chunk overrun fix] The EOS BLOCK floor must scale below the cap for small chunks:
-    // a '.'/Yeah-style chunk (n_tokens<=2) with floor=budget(35) forced ≥1.4s of hallucinated
-    // tail even when EOS wanted to fire (evidence: '.' chunk → 3s junk at 16:12:09.987).
+    // [tiny-chunk overrun fix] The EOS BLOCK floor must scale below the cap for small chunks:
+    // a '.'/Yeah-style chunk (n_tokens<=2) with floor=budget(35) forced >=1.4s of hallucinated
+    // tail even when EOS wanted to fire (evidence: '.' chunk -> 3s junk at 16:12:09.987).
     // Floor = enough time for a couple of words, never more; cap may stay generous because
     // EOS is free to fire once the floor window passes.
     const bool is_empty_flush = (n_tokens == 0 && is_end_of_turn);
@@ -5147,8 +5147,8 @@ static bool generate_audio_tokens_local(
     constexpr int kEosFloorPerTextToken     = 8;
     const int eos_floor_final_chunk = is_empty_flush ? 0 :
         std::min(chunk_speech_budget, kEosFloorBaseWords + (int) n_tokens * kEosFloorPerTextToken);
-    constexpr int kEmptyFlushBudget   = 26;   // 空flush：仅留 EOS 空间
-    constexpr int kFinalChunkEosMargin = 25;  // 最后一个带文本 chunk 的 EOS 余量
+    constexpr int kEmptyFlushBudget   = 26;   // empty flush: just room for EOS
+    constexpr int kFinalChunkEosMargin = 25;  // EOS headroom on the final text chunk
     const int max_audio_tokens = ctx_omni->duplex_mode ?
         (is_end_of_turn ? (is_empty_flush ? kEmptyFlushBudget : chunk_speech_budget + kFinalChunkEosMargin)
                         : chunk_speech_budget) : 500;
@@ -5274,7 +5274,7 @@ static bool generate_audio_tokens_local(
     // Python generate_chunk: input_ids_sliced = new_tokens[:, 0:t]  # 只用当前 chunk 内的 tokens
     std::vector<llama_token> chunk_generated_tokens;
     
-    // 🔧 [单双工适配] min_new_tokens 逻辑 (EOS floor defined above from chunk_speech_budget)
+    // [duplex/simplex] min_new_tokens (EOS floor defined above from chunk_speech_budget)
     const int min_new_tokens = ctx_omni->duplex_mode ?
         (is_end_of_turn ? eos_floor_final_chunk : 26) :
         100;  // 🔧 单工模式：至少生成 100 个 tokens 防止过早 EOS
@@ -5824,9 +5824,10 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
             
             if (ctx_omni->speek_done && llm_finish) {
                 if (ctx_omni->duplex_mode && !current_chunk_token_ids.empty()) {
-                    // duplex 的 llm_finish 只表示本次 LLM chunk 结束，未必是 turn 结束。
-                    // TTS cache 只能在真正 is_end_of_turn 后清理，否则连续 speak chunk
-                    // 会被当成新一轮，导致中途清 KV 后吞字/断字。
+                    // duplex llm_finish only means THIS LLM chunk ended - not the turn.
+                    // The TTS cache must only be cleared after a real is_end_of_turn, or
+                    // consecutive speak chunks get treated as a new round: mid-turn KV
+                    // clears swallow/drop words.
                     ctx_omni->speek_done = false;
                 } else if (ctx_omni->duplex_mode && accumulated_is_end_of_turn) {
                     ctx_omni->speek_done = false;
@@ -8376,18 +8377,18 @@ void t2w_thread_func_python(struct omni_context * ctx_omni, common_params *param
             }
             
             // Slide window
-            // 🔧 [chunk-boundary overlap fix] On a mid-turn chunk flush (need_flush, not the
+            // [chunk-boundary overlap fix] On a mid-turn chunk flush (need_flush, not the
             // final round window), preserve the PRE_LOOKAHEAD tail tokens so the NEXT chunk's
-            // first window still has lookahead context — otherwise every chunk-boundary ending
+            // first window still has lookahead context - otherwise every chunk-boundary ending
             // is synthesized without its 3-token tail and audibly clips/fades.
             if (!ctx_omni->duplex_mode) {
                 const bool round_final_flush = is_final;
                 if (round_final_flush) {
-                    token_buffer.clear();  // round真正结束：不保留上下文
+                    token_buffer.clear();  // round truly over: no context kept
                 } else if (token_buffer.size() > CHUNK_SIZE) {
                     token_buffer.erase(token_buffer.begin(), token_buffer.begin() + CHUNK_SIZE);
                 } else if (token_buffer.size() > PRE_LOOKAHEAD) {
-                    // chunk边界但还有超过lookahead的残留 → 保留最后3个token供下一个chunk接续
+                    // chunk boundary with more-than-lookahead residue -> keep the last 3 tokens to seed the next chunk
                     token_buffer.erase(token_buffer.begin(), token_buffer.begin() + (token_buffer.size() - PRE_LOOKAHEAD));
                 }
                 // size <= PRE_LOOKAHEAD: keep as-is (seed for next chunk)
@@ -8639,9 +8640,9 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
         // Process windows using sliding window
         while (token_buffer.size() >= min_process_threshold || (need_flush && !token_buffer.empty())) {
             // Determine how many tokens to process
-            // 🔧 [final-flush dedup fix] On the FINAL window the buffer = [PRE_LOOKAHEAD held
+            // [final-flush dedup fix] On the FINAL window the buffer = [PRE_LOOKAHEAD held
             // tokens][new tokens]. Those held tokens were ALREADY synthesized inside the
-            // previous window's audio — feeding them again repeats the last phoneme/word.
+            // previous window's audio - feeding them again repeats the last phoneme/word.
             // Drop them from the final window only (vocoder mel/source caches keep continuity).
             bool is_last_window = is_final && (token_buffer.size() <= (size_t) WINDOW_SIZE);
             const size_t window_start = (is_last_window && token_buffer.size() > (size_t) PRE_LOOKAHEAD)
@@ -8653,8 +8654,8 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
 
             std::vector<int32_t> window(token_buffer.begin() + window_start, token_buffer.begin() + window_start + process_size);
 
-            // 🔧 [AB test] optional dump of the exact speech-token stream fed to token2wav.
-            // File is APPENDED across turns/windows — clear it between measurement runs.
+            // [AB test] optional dump of the exact speech-token stream fed to token2wav.
+            // File is APPENDED across turns/windows - clear it between measurement runs.
             {
                 static const char * dump_env = ::getenv("T2W_DUMP_TOKENS");
                 if (dump_env && dump_env[0] != '\0') {
@@ -8684,17 +8685,17 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
                     const int32_t byte_rate = sample_rate * block_align;
                     
                     std::vector<int16_t> pcm(chunk_wav.size());
-                    // 🔧 [join click fix] 5ms linear fade-in/out at piece edges kills the phase
+                    // [join click fix] 5ms linear fade-in/out at piece edges kills the phase
                     // discontinuity click at piece joins (speech continues across pieces; the
                     // underlying stream is continuous, so only the boundary SAMPLES need a
                     // micro-ramp to glue the concatenated files together).
-                    const size_t fade_len = std::min<size_t>(chunk_wav.size(), (size_t)(sample_rate * 0.005)); // 5ms微渐变，消除接缝click
+                    const size_t fade_len = std::min<size_t>(chunk_wav.size(), (size_t)(sample_rate * 0.005)); // 5ms micro-fade kills join clicks
                     for (size_t i = 0; i < chunk_wav.size(); ++i) {
                         float x = chunk_wav[i];
                         if (!std::isfinite(x)) x = 0.0f;
                         x = std::max(-1.0f, std::min(1.0f, x));
                         if (i < fade_len) {
-                            x *= (float) i / (float) fade_len;   // fade-in (sample0 → silence)
+                            x *= (float) i / (float) fade_len;   // fade-in (sample0 -> silence)
                         }
                         if (i >= chunk_wav.size() - fade_len) {
                             x *= (float) (chunk_wav.size() - i) / (float) fade_len;
@@ -9003,11 +9004,12 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std::
             eval_prefix(ctx_omni, ctx_omni->params);
         }
         
-        // 🔧 [说明] index=0 时 system prompt 初始化完成。ref_audio 本体并不在这里 prefill：
-        // 初始化分支只评估文本 prompt；voice_audio 由下方的输入处理块（同步 prefill / 异步
-        // 队列）负责嵌入 — 见下方 fallthrough 说明。若 caller 同时传 ref_audio 与额外输入，
-        // 两者都会被处理（调用方控制语义）。
-        print_with_timestamp("stream_prefill(index=0): system prompt 初始化完成\n");
+        // [note] index=0: system prompt initialization is done. ref_audio itself is NOT
+        // prefilled here: the init branch evaluates only the text prompt; voice_audio is
+        // embedded by the input-handling block below (sync prefill / async queue) - see the
+        // fallthrough note there. If the caller passes ref_audio plus extra input, both get
+        // processed (caller owns the semantics).
+        print_with_timestamp("stream_prefill(index=0): system prompt initialized\n");
         
         // 🔧 [#39 滑动窗口] 注册 system prompt 保护长度
         sliding_window_register_system_prompt(ctx_omni);
@@ -9041,15 +9043,15 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std::
                 print_with_timestamp("create t2w thread success\n");
             }
         }
-        // 🔧 [text-only ab-test fix] A first-call prefill with only `text` (index=0) used to fall
-        // into this init branch and the text was silently DROPPED — the model then free-ran from
+        // [text-only ab-test fix] A first-call prefill with only `text` (index=0) used to fall
+        // into this init branch and the text was silently DROPPED - the model then free-ran from
         // the bare system prompt (chatting in the wrong language about nothing). If the caller
         // actually sent input with this init call, fall through and process it below.
         if (text.empty() && aud_fname.empty() && img_fname.empty()) {
             return true;
         }
         // falls through to the input-handling block below (no longer an else: an init call can
-        // CARRY input — when it does, both init AND input processing must run).
+        // CARRY input - when it does, both init AND input processing must run).
     }
     {
         if (!ctx_omni->async) {
@@ -9534,15 +9536,15 @@ bool stream_decode(struct omni_context * ctx_omni, std::string debug_dir, int ro
                     } else if (local_is_end_of_turn &&
                                token_type == OmniTokenType::NORMAL &&
                                is_valid_tts_token(sampled_token)) {
-                        // 🔧 [false-turn-eos revoke] The duplex model sometimes emits turn_eos at a
+                        // [false-turn-eos revoke] The duplex model sometimes emits turn_eos at a
                         // weak boundary (mid-list comma) and then CONTINUES SPEAKING in the same
                         // chunk. Honoring the stale end-of-turn here forces the TTS to flush+reset
                         // mid-sentence: the browser turn-restart drops scheduled audio (heard as
                         // skipped words at the seam) and stalls the timeline (cumulative Shift).
-                        // Speak text resumed ⇒ the turn was NOT over: revoke the flag for this chunk.
+                        // Speak text resumed => the turn was NOT over: revoke the flag for this chunk.
                         local_is_end_of_turn = false;
                         ctx_omni->current_turn_ended = false;
-                        print_with_timestamp("LLM Duplex: turn_eos REVOKED — speak text continued "
+                        print_with_timestamp("LLM Duplex: turn_eos REVOKED - speak text continued "
                                             "in same chunk (false boundary at weak pause)\n");
                     } else if (token_type == OmniTokenType::LISTEN) {
                         // 🔧 [修复尾音问题] LISTEN 表示切回听状态：
