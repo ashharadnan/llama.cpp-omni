@@ -8617,24 +8617,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
         }
         
         // Add new tokens to buffer
-        size_t buffer_before = token_buffer.size();
         token_buffer.insert(token_buffer.end(), new_tokens.begin(), new_tokens.end());
-        
-        // 🔧 [DEBUG] 打印收到的 token IDs (只打印前10个和后3个)
-        if (new_tokens.size() > 0) {
-            std::string tokens_str = "[";
-            for (size_t i = 0; i < std::min(new_tokens.size(), (size_t)10); i++) {
-                tokens_str += std::to_string(new_tokens[i]);
-                if (i < std::min(new_tokens.size(), (size_t)10) - 1) tokens_str += ",";
-            }
-            if (new_tokens.size() > 10) {
-                tokens_str += "...";
-                for (size_t i = new_tokens.size() - 3; i < new_tokens.size(); i++) {
-                    tokens_str += "," + std::to_string(new_tokens[i]);
-                }
-            }
-            tokens_str += "]";
-        }
         
         // Check if token2wav is initialized
         if (!ctx_omni->token2wav_initialized || !ctx_omni->token2wav_session) {
@@ -8654,7 +8637,6 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
         }
         
         // Process windows using sliding window
-        int process_count = 0;
         while (token_buffer.size() >= min_process_threshold || (need_flush && !token_buffer.empty())) {
             // Determine how many tokens to process
             // 🔧 [final-flush dedup fix] On the FINAL window the buffer = [PRE_LOOKAHEAD held
@@ -8763,8 +8745,6 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
             }
             
             // Slide window by CHUNK_SIZE (25), keep last PRE_LOOKAHEAD (3) for overlap
-            size_t buffer_before_slide = token_buffer.size();
-            
             if (!ctx_omni->duplex_mode) {
                 // 🔧 [单工模式] 保持原有逻辑，绝对不改动
                 // Slide window by CHUNK_SIZE (25), keep last PRE_LOOKAHEAD (3) for overlap
@@ -8796,7 +8776,6 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
                     token_buffer.clear();
                 }
             }
-            process_count++;
             
             if (is_last_window) {
                 // 🔧 [与 Python 对齐] 只有 is_final（轮次结束）时才重置
