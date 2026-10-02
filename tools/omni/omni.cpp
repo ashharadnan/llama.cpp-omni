@@ -9539,6 +9539,19 @@ bool stream_decode(struct omni_context * ctx_omni, std::string debug_dir, int ro
                                             "set is_end_of_turn=true (not breaking, wait for chunk_eos)\n",
                                             (int)token_type);
                         // 不 break，不设 llm_finish，继续生成直到 chunk_eos/listen
+                    } else if (local_is_end_of_turn &&
+                               token_type == OmniTokenType::NORMAL &&
+                               is_valid_tts_token(sampled_token)) {
+                        // 🔧 [false-turn-eos revoke] The duplex model sometimes emits turn_eos at a
+                        // weak boundary (mid-list comma) and then CONTINUES SPEAKING in the same
+                        // chunk. Honoring the stale end-of-turn here forces the TTS to flush+reset
+                        // mid-sentence: the browser turn-restart drops scheduled audio (heard as
+                        // skipped words at the seam) and stalls the timeline (cumulative Shift).
+                        // Speak text resumed ⇒ the turn was NOT over: revoke the flag for this chunk.
+                        local_is_end_of_turn = false;
+                        ctx_omni->current_turn_ended = false;
+                        print_with_timestamp("LLM Duplex: turn_eos REVOKED — speak text continued "
+                                            "in same chunk (false boundary at weak pause)\n");
                     } else if (token_type == OmniTokenType::LISTEN) {
                         // 🔧 [修复尾音问题] LISTEN 表示切回听状态：
                         // - 如果之前在 SPEAK（slide_last_was_listen=false），说明本轮发言刚结束，
