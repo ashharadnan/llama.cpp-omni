@@ -7612,7 +7612,8 @@ bool flowGGUFModelRunner::init_from_host_caches(const flowStreamCacheHost & cach
     // flow-state (conformer/estimator KV caches) whose SHAPES don't depend on the step count,
     // but the OLD hard match made the 5-step-baked cache pin every runtime session to 5
     // flow-matching ODE steps — coarse sampling, audible static between speech segments.
-    // Only reject when the cache has no recorded timesteps but caller passed none either.
+    // A mismatch between recorded and requested steps is reported and allowed; nothing is
+    // rejected (steps don't shape the cached tensors).
     if (cache_host.n_timesteps != 0 && cache_host.n_timesteps != n_timesteps) {
         LOG_INFO("[Token2Mel] cache baked at n_timesteps=%d, running with %d (allowed: "
                  "cache shapes are timestep-independent)\n",

@@ -5111,7 +5111,7 @@ static bool generate_audio_tokens_local(
     const int audio_bos_token_id = 151687;
     const int num_audio_tokens = 6562;
     // 🔧 [单双工适配] max_audio_tokens:
-    // - 双工模式: 26 (与 Python 对齐，max_token_per_chunk = 25 + 1)
+    // - 双工模式: chunk_speech_budget（见下，随文本量缩放；空 flush = 26）
     // - 单工模式: 500 (允许更长的生成，靠 EOS 结束)
     //
     // 🔧 [cloned-voice speech budget] The Python-parity 26-token cap (≈1.04s speech) assumes the
@@ -5121,7 +5121,13 @@ static bool generate_audio_tokens_local(
     // words. Fix: size the audio budget from the chunk's actual text load.
     // words ≈ n_tokens * 0.75; slow-clone pace ≈ 2.0 words/s ⇒ audio tokens ≈ n_tokens * 10 + 15.
     // Empirically calibrated 2026-10-01: 24 text tokens (16 words, slow pace) need ~280 audio tokens.
-    const int chunk_speech_budget = std::max(26, n_tokens * 10 + 15);
+    // Cloned-voice pace budget: ~10 audio tokens per text token + 15 headroom (ear-calibrated;
+    // see note above). Factory-voice floor 26 keeps Python-parity for fast voices.
+    constexpr int kAudioTokensPerTextToken = 10;
+    constexpr int kAudioBudgetHeadroom     = 15;
+    constexpr int kMinChunkSpeechBudget    = 26;
+    const int chunk_speech_budget = std::max(kMinChunkSpeechBudget,
+                                             (int) n_tokens * kAudioTokensPerTextToken + kAudioBudgetHeadroom);
     // Every duplex chunk cap = speech budget; EOS stays blocked for the whole chunk (min == cap,
     // same structure as Python where min=max=26) so the chunk always speaks its full text.
     // Final chunk with text: cap = budget + 25 margin so EOS may fire inside the margin window.
@@ -5135,9 +5141,17 @@ static bool generate_audio_tokens_local(
     // Floor = enough time for a couple of words, never more; cap may stay generous because
     // EOS is free to fire once the floor window passes.
     const bool is_empty_flush = (n_tokens == 0 && is_end_of_turn);
-    const int eos_floor_final_chunk = is_empty_flush ? 0 : std::min(chunk_speech_budget, 8 + n_tokens * 8);
+    // EOS floor: enough audio for a couple of words only; scales down for tiny chunks so EOS
+    // isn't blocked into hallucinated tail speech.
+    constexpr int kEosFloorBaseWords        = 8;
+    constexpr int kEosFloorPerTextToken     = 8;
+    const int eos_floor_final_chunk = is_empty_flush ? 0 :
+        std::min(chunk_speech_budget, kEosFloorBaseWords + (int) n_tokens * kEosFloorPerTextToken);
+    constexpr int kEmptyFlushBudget   = 26;   // 空flush：仅留 EOS 空间
+    constexpr int kFinalChunkEosMargin = 25;  // 最后一个带文本 chunk 的 EOS 余量
     const int max_audio_tokens = ctx_omni->duplex_mode ?
-        (is_end_of_turn ? (is_empty_flush ? 26 : chunk_speech_budget + 25) : chunk_speech_budget) : 500;
+        (is_end_of_turn ? (is_empty_flush ? kEmptyFlushBudget : chunk_speech_budget + kFinalChunkEosMargin)
+                        : chunk_speech_budget) : 500;
     print_with_timestamp("TTS Local: mode=%s, max_audio_tokens=%d\n", 
                          ctx_omni->duplex_mode ? "duplex" : "simplex", max_audio_tokens);
     
@@ -8657,9 +8671,10 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params) 
             
             std::vector<int32_t> window(token_buffer.begin() + window_start, token_buffer.begin() + window_start + process_size);
             
-            // 🔧 [AB test] optional dump of the exact speech-token stream fed to token2wav
+            // 🔧 [AB test] optional dump of the exact speech-token stream fed to token2wav.
+            // File is APPENDED across turns/windows — clear it between measurement runs.
             {
-                const char * dump_env = ::getenv("T2W_DUMP_TOKENS");
+                static const char * dump_env = ::getenv("T2W_DUMP_TOKENS");
                 if (dump_env && dump_env[0] != '\0') {
                     FILE * fd_t2w_dump = fopen(dump_env, "ab");
                     if (fd_t2w_dump) {
@@ -9009,13 +9024,11 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std::
             eval_prefix(ctx_omni, ctx_omni->params);
         }
         
-        // 🔧 [说明] index=0 时，aud_fname 通常是 ref_audio（用于 voice cloning）
-        // ref_audio 已经在上面的 system prompt 初始化中被正确 prefill 了
-        // 这里不需要再处理 aud_fname，因为：
-        // 1. 如果 aud_fname 是 ref_audio，它已经作为 system prompt 的一部分被处理了
-        // 2. 如果 aud_fname 是用户音频，用户音频应该从 index >= 1 开始传入
-        // 所以 index=0 阶段只负责 system prompt 初始化，不处理额外的音频输入
-        print_with_timestamp("stream_prefill(index=0): system prompt 初始化完成，ref_audio 已在其中 prefill\n");
+        // 🔧 [说明] index=0 时 system prompt 初始化完成。ref_audio 本体并不在这里 prefill：
+        // 初始化分支只评估文本 prompt；voice_audio 由下方的输入处理块（同步 prefill / 异步
+        // 队列）负责嵌入 — 见下方 fallthrough 说明。若 caller 同时传 ref_audio 与额外输入，
+        // 两者都会被处理（调用方控制语义）。
+        print_with_timestamp("stream_prefill(index=0): system prompt 初始化完成\n");
         
         // 🔧 [#39 滑动窗口] 注册 system prompt 保护长度
         sliding_window_register_system_prompt(ctx_omni);
